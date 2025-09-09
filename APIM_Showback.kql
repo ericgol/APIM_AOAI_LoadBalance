@@ -1,0 +1,140 @@
+// === MAIN SHOWBACK QUERY ===
+// This query aggregates APIM usage data for showback reporting
+// Customize the time range and filters as needed
+
+let StartTime = ago(30d);
+let EndTime = now();
+
+// Parse APIM usage logs from Application Insights traces
+let ApimUsage = 
+    traces
+    | where timestamp between (StartTime .. EndTime)
+    | where message startswith "APIM_USAGE|"
+    | extend ParsedMessage = split(message, "|")
+    | extend 
+        ClientId = tostring(ParsedMessage[1]),
+        TenantId = tostring(ParsedMessage[2]), 
+        ApiName = tostring(ParsedMessage[3]),
+        OperationName = tostring(ParsedMessage[4]),
+        ResponseTimeMs = todouble(ParsedMessage[5]),
+        ResponseCode = toint(ParsedMessage[6]),
+        CostTier = tostring(ParsedMessage[7])
+    | where ClientId != "unknown" and ClientId != "no-token"
+    | extend 
+        Date = format_datetime(timestamp, 'yyyy-MM-dd'),
+        Hour = format_datetime(timestamp, 'yyyy-MM-dd HH:00:00'),
+        IsSuccess = ResponseCode < 400,
+        CostMultiplier = case(
+            CostTier == "premium", 3.0,
+            CostTier == "enterprise", 5.0, 
+            CostTier == "basic", 0.5,
+            1.0 // standard
+        ),
+        EstimatedCost = 0.001 * case(
+            CostTier == "premium", 3.0,
+            CostTier == "enterprise", 5.0,
+            CostTier == "basic", 0.5, 
+            1.0
+        );
+
+// === DAILY SUMMARY BY CLIENT ===
+ApimUsage
+| summarize 
+    TotalCalls = count(),
+    SuccessfulCalls = countif(IsSuccess),
+    FailedCalls = countif(not(IsSuccess)),
+    AvgResponseTime = round(avg(ResponseTimeMs), 2),
+    MaxResponseTime = max(ResponseTimeMs),
+    P95ResponseTime = round(percentile(ResponseTimeMs, 95), 2),
+    TotalEstimatedCost = round(sum(EstimatedCost), 4),
+    UniqueApis = dcount(ApiName),
+    UniqueOperations = dcount(strcat(ApiName, "|", OperationName))
+    by Date, ClientId, TenantId, CostTier
+| extend SuccessRate = round(todouble(SuccessfulCalls) / todouble(TotalCalls) * 100, 2)
+| order by Date desc, TotalCalls desc;
+
+// === API USAGE BREAKDOWN ===
+// Uncomment to see usage by API and operation
+/*
+ApimUsage
+| summarize 
+    CallCount = count(),
+    AvgResponseTime = round(avg(ResponseTimeMs), 2),
+    EstimatedCost = round(sum(EstimatedCost), 4),
+    UniqueClients = dcount(ClientId)
+    by ApiName, OperationName, CostTier, Date
+| order by Date desc, CallCount desc;
+*/
+
+// === HOURLY USAGE PATTERNS ===
+// Uncomment to analyze usage patterns by hour
+/*
+ApimUsage  
+| summarize 
+    CallCount = count(),
+    AvgResponseTime = round(avg(ResponseTimeMs), 2),
+    EstimatedCost = round(sum(EstimatedCost), 4)
+    by Hour, ClientId
+| extend HourOfDay = format_datetime(todatetime(Hour), 'HH:00')
+| order by Hour desc;
+*/
+
+// === COST ANALYSIS BY TENANT ===
+// Uncomment for tenant-level cost analysis
+/*
+ApimUsage
+| summarize 
+    TotalCalls = count(),
+    TotalCost = round(sum(EstimatedCost), 4),
+    AvgCostPerCall = round(avg(EstimatedCost), 6),
+    UniqueClients = dcount(ClientId),
+    UniqueApis = dcount(ApiName)
+    by TenantId, CostTier, Date
+| order by Date desc, TotalCost desc;
+*/
+
+// === ERROR ANALYSIS ===  
+// Query for error patterns and troubleshooting
+/*
+traces
+| where timestamp between (StartTime .. EndTime)
+| where message startswith "APIM_ERROR|"
+| extend ParsedError = split(message, "|")
+| extend 
+    ClientId = tostring(ParsedError[1]),
+    TenantId = tostring(ParsedError[2]),
+    ApiName = tostring(ParsedError[3]),
+    OperationName = tostring(ParsedError[4]),
+    ResponseTimeMs = todouble(ParsedError[5]),
+    ResponseCode = toint(ParsedError[6]),
+    ErrorMessage = tostring(ParsedError[7])
+| summarize 
+    ErrorCount = count(),
+    SampleErrorMessage = any(ErrorMessage),
+    AvgResponseTime = round(avg(ResponseTimeMs), 2)
+    by ClientId, ApiName, OperationName, ResponseCode, bin(timestamp, 1h)
+| order by timestamp desc, ErrorCount desc;
+*/
+
+// === EXPORT QUERY FOR POWER BI ===
+// Use this cleaned query for Power BI data source
+ApimUsage
+| summarize 
+    total_calls = count(),
+    successful_calls = countif(IsSuccess),
+    failed_calls = countif(not(IsSuccess)),
+    avg_response_time_ms = round(avg(ResponseTimeMs), 2),
+    max_response_time_ms = max(ResponseTimeMs),
+    p95_response_time_ms = round(percentile(ResponseTimeMs, 95), 2),
+    total_estimated_cost = round(sum(EstimatedCost), 4),
+    unique_apis = dcount(ApiName),
+    unique_operations = dcount(strcat(ApiName, "|", OperationName))
+    by 
+    date = Date,
+    client_id = ClientId,
+    tenant_id = TenantId,
+    cost_tier = CostTier
+| extend 
+    success_rate_percent = round(todouble(successful_calls) / todouble(total_calls) * 100, 2),
+    avg_cost_per_call = round(total_estimated_cost / total_calls, 6)
+| order by date desc, total_calls desc
