@@ -1,0 +1,376 @@
+<policies>
+    <inbound>
+        <base />
+        
+        <!-- Define backends with all properties -->
+        <set-variable name="backends" value="@{
+            JArray backends = new JArray();
+            
+            backends.Add(new JObject() 
+            { 
+                { "id", "backend-eastus-gpt5-embedada-ptu" },
+                { "url", "https://your-openai-eastus-gpt5-ptu.openai.azure.com/" }, 
+                { "priority", 1 },
+                { "weight", 100 },
+                { "deploymentid", "gpt5" },
+                { "embeddingtype", "text-embedding-ada-002" },
+                { "ptu", true },
+                { "zonal", false }
+            });
+            
+            backends.Add(new JObject() 
+            { 
+                { "id", "backend-eastus2-gpt5-embed3large-ptu" },
+                { "url", "https://your-openai-eastus2-gpt5-ptu.openai.azure.com/" }, 
+                { "priority", 1 },
+                { "weight", 100 },
+                { "deploymentid", "gpt5" },
+                { "embeddingtype", "text-embedding-3-large" },
+                { "ptu", true },
+                { "zonal", false }
+            });
+            
+            backends.Add(new JObject() 
+            { 
+                { "id", "backend-westus-gpt41-simcurie-ptu" },
+                { "url", "https://your-openai-westus-gpt41-ptu.openai.azure.com/" }, 
+                { "priority", 1 },
+                { "weight", 90 },
+                { "deploymentid", "gpt4.1" },
+                { "embeddingtype", "text-similarity-curie-001" },
+                { "ptu", true },
+                { "zonal", false }
+            });
+            
+            backends.Add(new JObject() 
+            { 
+                { "id", "backend-canadaeast-gpt4o-embed3small-zonal" },
+                { "url", "https://your-openai-canadaeast-gpt4o-zonal.openai.azure.com/" }, 
+                { "priority", 2 },
+                { "weight", 80 },
+                { "deploymentid", "gpt-4o" },
+                { "embeddingtype", "text-embedding-3-small" },
+                { "ptu", false },
+                { "zonal", true }
+            });
+            
+            backends.Add(new JObject() 
+            { 
+                { "id", "backend-southcentral-gpt4o-simdavinci-zonal" },
+                { "url", "https://your-openai-southcentral-gpt4o-zonal.openai.azure.com/" }, 
+                { "priority", 2 },
+                { "weight", 80 },
+                { "deploymentid", "gpt-4o" },
+                { "embeddingtype", "text-similarity-davinci-001" },
+                { "ptu", false },
+                { "zonal", true }
+            });
+            
+            backends.Add(new JObject() 
+            { 
+                { "id", "backend-australiaeast-gpt4omini-embed3large-standard" },
+                { "url", "https://your-openai-australiaeast-gpt4omini.openai.azure.com/" }, 
+                { "priority", 3 },
+                { "weight", 60 },
+                { "deploymentid", "gpt-4o-mini" },
+                { "embeddingtype", "text-embedding-3-large" },
+                { "ptu", false },
+                { "zonal", false }
+            });
+            
+            backends.Add(new JObject() 
+            { 
+                { "id", "backend-francecentral-gpt4omini-embedlegacy-standard" },
+                { "url", "https://your-openai-francecentral-gpt4omini.openai.azure.com/" }, 
+                { "priority", 3 },
+                { "weight", 60 },
+                { "deploymentid", "gpt-4o-mini" },
+                { "embeddingtype", "text-embedding-legacy" },
+                { "ptu", false },
+                { "zonal", false }
+            });
+            
+            backends.Add(new JObject() 
+            { 
+                { "id", "backend-uksouth-gpt35-embed3small-standard" },
+                { "url", "https://your-openai-uksouth-gpt35.openai.azure.com/" }, 
+                { "priority", 4 },
+                { "weight", 40 },
+                { "deploymentid", "gpt3" },
+                { "embeddingtype", "text-embedding-3-small" },
+                { "ptu", false },
+                { "zonal", false }
+            });
+            
+            return backends;
+        }" />
+
+        <!-- Initialize variables -->
+        <set-variable name="currentTimeTicks" value="@(DateTimeOffset.UtcNow.Ticks)" />
+        <set-variable name="retryAttempt" value="@(context.Variables.ContainsKey("retryAttempt") ? (int)context.Variables["retryAttempt"] : 0)" />
+        
+        <!-- Select optimal backend with all priority logic -->
+        <set-variable name="selectedBackend" value="@{
+            JArray backends = (JArray)context.Variables["backends"];
+            long currentTime = (long)context.Variables["currentTimeTicks"];
+            
+            JObject selectedBackend = null;
+            int bestEmbeddingWeight = 0;
+            int bestDeploymentWeight = 0;
+            bool bestIsPtu = false;
+            bool bestIsZonal = false;
+            int bestPriority = int.MaxValue;
+            int bestWeight = 0;
+            int bestLatency = int.MaxValue;
+            
+            foreach (JObject backend in backends)
+            {
+                string backendId = (string)backend["id"];
+                string deploymentId = (string)backend["deploymentid"];
+                string embeddingType = (string)backend["embeddingtype"];
+                bool isPtu = (bool)backend["ptu"];
+                bool isZonal = (bool)backend["zonal"];
+                int priority = (int)backend["priority"];
+                int weight = (int)backend["weight"];
+                
+                bool isThrottled = false;
+                long retryAfterTicks = 0;
+                int latency = 1000;
+                
+                if (context.Variables.ContainsKey(backendId + "-throttled"))
+                {
+                    string throttledStr = (string)context.Variables[backendId + "-throttled"];
+                    if (!string.IsNullOrEmpty(throttledStr))
+                    {
+                        bool.TryParse(throttledStr, out isThrottled);
+                    }
+                }
+                
+                if (context.Variables.ContainsKey(backendId + "-retryafter"))
+                {
+                    string retryAfterStr = (string)context.Variables[backendId + "-retryafter"];
+                    if (!string.IsNullOrEmpty(retryAfterStr))
+                    {
+                        long.TryParse(retryAfterStr, out retryAfterTicks);
+                    }
+                }
+                
+                if (context.Variables.ContainsKey(backendId + "-latency"))
+                {
+                    string latencyStr = (string)context.Variables[backendId + "-latency"];
+                    if (!string.IsNullOrEmpty(latencyStr))
+                    {
+                        int.TryParse(latencyStr, out latency);
+                    }
+                }
+                
+                if (isThrottled && currentTime >= retryAfterTicks)
+                {
+                    isThrottled = false;
+                }
+                
+                if (!isThrottled)
+                {
+                    int embeddingWeight = 800;
+                    switch (embeddingType)
+                    {
+                        case "text-embedding-3-large": embeddingWeight = 2000; break;
+                        case "text-embedding-3-small": embeddingWeight = 1800; break;
+                        case "text-embedding-ada-002": embeddingWeight = 1600; break;
+                        case "text-embedding-legacy": embeddingWeight = 1400; break;
+                        case "text-similarity-davinci-001": embeddingWeight = 1200; break;
+                        case "text-similarity-curie-001": embeddingWeight = 1000; break;
+                        default: embeddingWeight = 800; break;
+                    }
+                    
+                    int deploymentWeight = 500;
+                    switch (deploymentId)
+                    {
+                        case "gpt5": deploymentWeight = 1000; break;
+                        case "gpt4.1": deploymentWeight = 900; break;
+                        case "gpt-4o": deploymentWeight = 800; break;
+                        case "gpt-4o-mini": deploymentWeight = 700; break;
+                        case "gpt3": deploymentWeight = 600; break;
+                        default: deploymentWeight = 500; break;
+                    }
+                    
+                    bool shouldSelect = false;
+                    
+                    if (selectedBackend == null)
+                    {
+                        shouldSelect = true;
+                    }
+                    else if (embeddingWeight > bestEmbeddingWeight)
+                    {
+                        shouldSelect = true;
+                    }
+                    else if (embeddingWeight == bestEmbeddingWeight)
+                    {
+                        if (deploymentWeight > bestDeploymentWeight)
+                        {
+                            shouldSelect = true;
+                        }
+                        else if (deploymentWeight == bestDeploymentWeight)
+                        {
+                            if (isPtu && !bestIsPtu)
+                            {
+                                shouldSelect = true;
+                            }
+                            else if (isPtu == bestIsPtu && isZonal && !bestIsZonal)
+                            {
+                                shouldSelect = true;
+                            }
+                            else if (isPtu == bestIsPtu && isZonal == bestIsZonal)
+                            {
+                                if (priority < bestPriority)
+                                {
+                                    shouldSelect = true;
+                                }
+                                else if (priority == bestPriority)
+                                {
+                                    if (weight > bestWeight)
+                                    {
+                                        shouldSelect = true;
+                                    }
+                                    else if (weight == bestWeight && latency < bestLatency)
+                                    {
+                                        shouldSelect = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (shouldSelect)
+                    {
+                        selectedBackend = backend;
+                        bestEmbeddingWeight = embeddingWeight;
+                        bestDeploymentWeight = deploymentWeight;
+                        bestIsPtu = isPtu;
+                        bestIsZonal = isZonal;
+                        bestPriority = priority;
+                        bestWeight = weight;
+                        bestLatency = latency;
+                    }
+                }
+            }
+            
+            if (selectedBackend == null)
+            {
+                selectedBackend = (JObject)backends[0];
+            }
+            
+            return selectedBackend;
+        }" />
+
+        <!-- Set backend variables -->
+        <set-variable name="backendId" value="@((string)((JObject)context.Variables["selectedBackend"])["id"])" />
+        <set-variable name="backendUrl" value="@((string)((JObject)context.Variables["selectedBackend"])["url"])" />
+        
+        <!-- Set backend service -->
+        <set-backend-service base-url="@((string)((JObject)context.Variables["backendUrl"]))" />
+        
+        <!-- Record request start time -->
+        <set-variable name="requestStartTicks" value="@(DateTimeOffset.UtcNow.Ticks)" />
+        
+        <!-- Authentication -->
+        <authentication-managed-identity resource="https://cognitiveservices.azure.com" output-token-variable-name="managed-id-access-token" />
+        <set-header name="Authorization" exists-action="override">
+            <value>@("Bearer " + (string)context.Variables["managed-id-access-token"])</value>
+        </set-header>
+    </inbound>
+    
+    <backend>
+        <retry condition="@(context.Response != null && (context.Response.StatusCode == 429 || context.Response.StatusCode == 401 || context.Response.StatusCode >= 500) && (int)context.Variables["retryAttempt"] < 3)" count="3" interval="0">
+            <forward-request />
+        </retry>
+    </backend>
+    
+    <outbound>
+        <base />
+        
+        <!-- Calculate and store latency -->
+        <set-variable name="requestEndTicks" value="@(DateTimeOffset.UtcNow.Ticks)" />
+        <set-variable name="latency" value="@{
+            long startTicks = (long)context.Variables["requestStartTicks"];
+            long endTicks = (long)context.Variables["requestEndTicks"];
+            int latencyMs = (int)((endTicks - startTicks) / 10000);
+            return latencyMs > 0 ? latencyMs : 1;
+        }" />
+        
+        <cache-store-value key="@(context.Variables["backendId"] + "-latency")" 
+                          value="@(((int)context.Variables["latency"]).ToString())" 
+                          duration="300" />
+        
+        <!-- Handle response codes and update backend status -->
+        <choose>
+            <when condition="@(context.Response.StatusCode == 429)">
+                <cache-store-value key="@(context.Variables["backendId"] + "-throttled")" 
+                                  value="true" 
+                                  duration="3600" />
+                
+                <set-variable name="retryAfterTicks" value="@{
+                    int retryAfterSeconds = 60;
+                    if (context.Response.Headers.ContainsKey("Retry-After"))
+                    {
+                        string retryAfterHeader = context.Response.Headers["Retry-After"].FirstOrDefault();
+                        if (!string.IsNullOrEmpty(retryAfterHeader))
+                        {
+                            int.TryParse(retryAfterHeader, out retryAfterSeconds);
+                        }
+                    }
+                    long currentTicks = DateTimeOffset.UtcNow.Ticks;
+                    return currentTicks + (retryAfterSeconds * 10000000L);
+                }" />
+                
+                <cache-store-value key="@(context.Variables["backendId"] + "-retryafter")" 
+                                  value="@(((long)context.Variables["retryAfterTicks"]).ToString())" 
+                                  duration="3600" />
+            </when>
+            <when condition="@(context.Response.StatusCode >= 500)">
+                <cache-store-value key="@(context.Variables["backendId"] + "-throttled")" 
+                                  value="true" 
+                                  duration="60" />
+                
+                <set-variable name="retryAfterTicks" value="@(DateTimeOffset.UtcNow.Ticks + (10 * 10000000L))" />
+                
+                <cache-store-value key="@(context.Variables["backendId"] + "-retryafter")" 
+                                  value="@(((long)context.Variables["retryAfterTicks"]).ToString())" 
+                                  duration="60" />
+            </when>
+            <when condition="@(context.Response.StatusCode == 200)">
+                <cache-store-value key="@(context.Variables["backendId"] + "-throttled")" 
+                                  value="false" 
+                                  duration="300" />
+            </when>
+        </choose>
+    </outbound>
+    
+    <on-error>
+        <set-variable name="retryAttempt" value="@((int)context.Variables["retryAttempt"] + 1)" />
+        
+        <choose>
+            <when condition="@((int)context.Variables["retryAttempt"] < 3)">
+                <cache-store-value key="@(context.Variables["backendId"] + "-throttled")" 
+                                  value="true" 
+                                  duration="60" />
+                
+                <set-variable name="retryAfterTicks" value="@(DateTimeOffset.UtcNow.Ticks + (10 * 10000000L))" />
+                
+                <cache-store-value key="@(context.Variables["backendId"] + "-retryafter")" 
+                                  value="@(((long)context.Variables["retryAfterTicks"]).ToString())" 
+                                  duration="60" />
+                
+                <return-response>
+                    <set-status code="500" reason="Retrying with different backend" />
+                </return-response>
+            </when>
+            <otherwise>
+                <return-response>
+                    <set-status code="500" reason="All backends unavailable" />
+                    <set-body>{"error": "All Azure OpenAI backends are currently unavailable. Please try again later."}</set-body>
+                </return-response>
+            </otherwise>
+        </choose>
+    </on-error>
+</policies>
