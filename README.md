@@ -40,9 +40,3 @@ APIM_SmartLB_Unified - SPIM Policy Template for Smart Load Balancing
     Model Diversity: Different OpenAI models with various embedding capabilities
 
 
-
-The repo also includes initial templating for FinOps showback purposes.
-
-APIM_Showback - Common KQL Queries for showback purposes.
-PBI_SchemaDAXMeasures - Power BI Schema and DAX Measures
-APIM_AOAI_CustomMetrics - Template APIM Policy for capturing custom metrics for showback purposes with AOAI API calls. 
